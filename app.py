@@ -16,6 +16,7 @@ from utils.file_utils import create_zip
 from utils.io_helpers import ensure_dir
 
 
+
 # =====================================================
 # PAGE CONFIG
 # =====================================================
@@ -302,8 +303,9 @@ if "step1_df" in st.session_state:
             st.write(f"Total Open Access Papers: {len(oa_df)}")
             st.dataframe(oa_df, use_container_width=True)
 
-            now = datetime.now().strftime("%Y-%m-%d_%H-%M")
+            now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d_%H-%M")
             keyword_clean = query.strip().replace(" ", "_").replace(",", "")
+
             keyword_clean = keyword_clean if keyword_clean else "search"
 
             oa_file_name = f"{keyword_clean}_{now}_open_access.xlsx"
