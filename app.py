@@ -292,13 +292,15 @@ if "step1_df" in st.session_state:
 
     st.success(f"{len(df)} papers retrieved.")
 
-    st.subheader("📊 Source Distribution")
-    st.bar_chart(df["Source"].value_counts())
+    #st.subheader("📊 Source Distribution")
+    #st.bar_chart(df["Source"].value_counts())
 
-    st.subheader("🏆 Top 10 Most Cited Papers")
-    st.dataframe(df.head(10), use_container_width=True)
+    #st.subheader("🏆 Top 10 Most Cited Papers")
+    #st.dataframe(df.head(10), use_container_width=True)
 
-    st.subheader("📄 All Results")
+    #st.subheader("📄 All Results")
+    #st.dataframe(df, use_container_width=True)
+    with st.expander("📄 All Results", expanded=False):
     st.dataframe(df, use_container_width=True)
 
     buffer = io.BytesIO()
