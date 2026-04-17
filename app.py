@@ -3,7 +3,7 @@ import io
 import re
 import zipfile
 from datetime import datetime
-
+from io import BytesIO
 import pandas as pd
 import streamlit as st
 from spellchecker import SpellChecker
