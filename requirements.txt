@@ -13,3 +13,9 @@ tenacity
 pyspellchecker
 google-generativeai
 google-genai
+streamlit
+pandas
+requests
+beautifulsoup4
+openpyxl
+selenium
