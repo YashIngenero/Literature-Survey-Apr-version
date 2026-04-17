@@ -110,6 +110,8 @@ def classify_failure_reason(error_text):
         return "NO_OPEN_ACCESS_PDF"
     if "unpaywall" in text:
         return "UNPAYWALL_ERROR"
+    if "sciencedirect_public_route_failed" in text:
+        return "SCIENCEDIRECT_PUBLIC_ROUTE_FAILED"
     if "all sources failed" in text:
         return "ALL_SOURCES_FAILED"
 
@@ -322,7 +324,6 @@ def build_sciencedirect_pdf_candidates(pii):
     return [
         f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft?isDTMRedir=true&download=true",
         f"https://www.sciencedirect.com/science/article/pii/{pii}/pdf?md5=&pid=1-s2.0-{pii}-main.pdf",
-        f"https://api.elsevier.com/content/article/pii/{pii}?httpAccept=application/pdf",
     ]
 
 
@@ -357,7 +358,7 @@ def try_sciencedirect_fallback(source_url, path, session=None):
         except Exception as e:
             last_err = e
 
-    return None, f"SCIENCEDIRECT_FAILED: {last_err}", final_url
+    return None, f"SCIENCEDIRECT_PUBLIC_ROUTE_FAILED: {last_err}", final_url
 
 
 def get_unpaywall_pdf(doi, session=None):
