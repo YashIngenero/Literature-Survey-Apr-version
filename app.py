@@ -282,7 +282,7 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
             "Paper Title",
             "Publication Year",
             "Publication Type",
-            "Author Names"
+            "Author Names",
             "Abstract"
         ]
         
