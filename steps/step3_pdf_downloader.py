@@ -86,6 +86,8 @@ def classify_failure_reason(error_text):
         return "UNPAYWALL_ERROR"
     if "all sources failed" in text:
         return "ALL_SOURCES_FAILED"
+    if "science direct" in text or "sciencedirect" in text:
+        return "SCIENCEDIRECT_ERROR"
 
     return "OTHER_DOWNLOAD_ERROR"
 
@@ -166,6 +168,88 @@ def try_html_fallback(url, session=None):
     return pdf_url, "HTML_EXTRACTED"
 
 
+def resolve_final_url(url, session=None):
+    if not is_valid_url(url):
+        return None
+
+    session = session or get_requests_session()
+
+    try:
+        r = session.get(
+            url,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+            stream=False,
+        )
+        r.raise_for_status()
+        return r.url
+    except Exception:
+        return None
+
+
+def extract_sciencedirect_pii(url):
+    url = clean_value(url)
+    if not url:
+        return None
+
+    # Example:
+    # https://www.sciencedirect.com/science/article/pii/S2212982020310623
+    m = re.search(r"/pii/([A-Z0-9]+)", url, flags=re.I)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def build_sciencedirect_pdf_candidates(pii):
+    pii = clean_value(pii)
+    if not pii:
+        return []
+
+    return [
+        f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft?isDTMRedir=true&download=true",
+        f"https://www.sciencedirect.com/science/article/pii/{pii}/pdf?md5=&pid=1-s2.0-{pii}-main.pdf",
+        f"https://api.elsevier.com/content/article/pii/{pii}?httpAccept=application/pdf",
+    ]
+
+
+def try_sciencedirect_fallback(source_url, path, session=None):
+    """
+    Resolve article URL -> extract PII -> try known ScienceDirect PDF routes.
+    """
+    if not is_valid_url(source_url):
+        return None, "INVALID_URL", None
+
+    session = session or get_requests_session()
+
+    final_url = resolve_final_url(source_url, session=session)
+    if not final_url:
+        return None, "SCIENCEDIRECT_RESOLVE_FAILED", None
+
+    pii = extract_sciencedirect_pii(final_url)
+    if not pii:
+        return None, "SCIENCEDIRECT_NO_PII", final_url
+
+    candidates = build_sciencedirect_pdf_candidates(pii)
+
+    last_err = None
+    for candidate in candidates:
+        try:
+            downloaded_path, mode, final_pdf_url = try_direct_download(
+                candidate,
+                path,
+                session=session,
+                referer=final_url,
+            )
+            if downloaded_path:
+                return downloaded_path, "SCIENCEDIRECT_PII", final_pdf_url
+        except Exception as e:
+            last_err = e
+
+    return None, f"SCIENCEDIRECT_FAILED: {last_err}", final_url
+
+
 def get_unpaywall_pdf(doi, session=None):
     doi_url = normalize_doi_url(doi)
     if not doi_url:
@@ -183,10 +267,27 @@ def get_unpaywall_pdf(doi, session=None):
 
         data = r.json()
 
-        if data.get("best_oa_location"):
-            pdf = clean_value(data["best_oa_location"].get("url_for_pdf"))
+        # 1) best_oa_location.url_for_pdf
+        best = data.get("best_oa_location") or {}
+        pdf = clean_value(best.get("url_for_pdf"))
+        if pdf:
+            return pdf, None
+
+        # 2) best_oa_location.url
+        best_url = clean_value(best.get("url"))
+        if best_url:
+            return best_url, "UNPAYWALL_BEST_URL_NO_DIRECT_PDF"
+
+        # 3) oa_locations fallback
+        for loc in data.get("oa_locations", []) or []:
+            pdf = clean_value(loc.get("url_for_pdf"))
             if pdf:
                 return pdf, None
+
+        for loc in data.get("oa_locations", []) or []:
+            loc_url = clean_value(loc.get("url"))
+            if loc_url:
+                return loc_url, "UNPAYWALL_OA_URL_NO_DIRECT_PDF"
 
         return None, "NO_OPEN_ACCESS_PDF"
 
@@ -237,9 +338,7 @@ def process_single_paper(index, row_dict, output_dir):
                         "download_source": "PDF Link",
                         "download_mode": mode,
                         "manual_download_recommended": "NO",
-                        "attempted_sources": " | ".join(
-                            [f"{src}: {url}" for src, url in candidate_attempts]
-                        ),
+                        "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                     })
                     return {
                         "status": "success",
@@ -269,9 +368,7 @@ def process_single_paper(index, row_dict, output_dir):
                             "download_source": "HTML fallback from PDF Link",
                             "download_mode": mode,
                             "manual_download_recommended": "NO",
-                            "attempted_sources": " | ".join(
-                                [f"{src}: {url}" for src, url in candidate_attempts]
-                            ),
+                            "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                         })
                         return {
                             "status": "success",
@@ -300,9 +397,7 @@ def process_single_paper(index, row_dict, output_dir):
                         "download_source": "arXiv",
                         "download_mode": mode,
                         "manual_download_recommended": "NO",
-                        "attempted_sources": " | ".join(
-                            [f"{src}: {url}" for src, url in candidate_attempts]
-                        ),
+                        "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                     })
                     return {
                         "status": "success",
@@ -334,9 +429,7 @@ def process_single_paper(index, row_dict, output_dir):
                             "download_source": "Unpaywall",
                             "download_mode": mode,
                             "manual_download_recommended": "NO",
-                            "attempted_sources": " | ".join(
-                                [f"{src}: {url}" for src, url in candidate_attempts]
-                            ),
+                            "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                         })
                         return {
                             "status": "success",
@@ -344,6 +437,35 @@ def process_single_paper(index, row_dict, output_dir):
                             "saved_pdf_path": path,
                             "message": f"✅ Downloaded (Unpaywall): {title}",
                         }
+                except Exception as e:
+                    last_error = e
+
+                # If Unpaywall gave OA landing page but not direct PDF, try HTML on that URL too
+                try:
+                    pdf_url_html, reason2 = try_html_fallback(unpaywall_url, session=session)
+                    if pdf_url_html:
+                        candidate_attempts.append(("HTML fallback from Unpaywall URL", pdf_url_html))
+                        direct_path, mode, final_url = try_direct_download(
+                            pdf_url_html, path, session=session, referer=unpaywall_url
+                        )
+                        if direct_path:
+                            record.update({
+                                "download_status": "success",
+                                "resolved_pdf_url": final_url,
+                                "saved_pdf_path": path,
+                                "failure_reason": None,
+                                "failure_category": None,
+                                "download_source": "HTML fallback from Unpaywall URL",
+                                "download_mode": mode,
+                                "manual_download_recommended": "NO",
+                                "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
+                            })
+                            return {
+                                "status": "success",
+                                "record": record,
+                                "saved_pdf_path": path,
+                                "message": f"✅ Downloaded (Unpaywall HTML fallback): {title}",
+                            }
                 except Exception as e:
                     last_error = e
             else:
@@ -370,9 +492,7 @@ def process_single_paper(index, row_dict, output_dir):
                             "download_source": "DOI landing page",
                             "download_mode": mode,
                             "manual_download_recommended": "NO",
-                            "attempted_sources": " | ".join(
-                                [f"{src}: {url}" for src, url in candidate_attempts]
-                            ),
+                            "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                         })
                         return {
                             "status": "success",
@@ -402,9 +522,7 @@ def process_single_paper(index, row_dict, output_dir):
                             "download_source": "Paper Link landing page",
                             "download_mode": mode,
                             "manual_download_recommended": "NO",
-                            "attempted_sources": " | ".join(
-                                [f"{src}: {url}" for src, url in candidate_attempts]
-                            ),
+                            "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
                         })
                         return {
                             "status": "success",
@@ -412,6 +530,42 @@ def process_single_paper(index, row_dict, output_dir):
                             "saved_pdf_path": path,
                             "message": f"✅ Downloaded (Paper Link fallback): {title}",
                         }
+            except Exception as e:
+                last_error = e
+
+        # ---------- 7️⃣ ScienceDirect / Elsevier PII fallback ----------
+        sciencedirect_sources = []
+        if is_valid_url(pdf_link):
+            sciencedirect_sources.append(("ScienceDirect fallback from PDF Link", pdf_link))
+        if is_valid_url(doi_url):
+            sciencedirect_sources.append(("ScienceDirect fallback from DOI", doi_url))
+        if is_valid_url(paper_link):
+            sciencedirect_sources.append(("ScienceDirect fallback from Paper Link", paper_link))
+
+        for label, src_url in sciencedirect_sources:
+            try:
+                candidate_attempts.append((label, src_url))
+                direct_path, mode, final_url = try_sciencedirect_fallback(
+                    src_url, path, session=session
+                )
+                if direct_path:
+                    record.update({
+                        "download_status": "success",
+                        "resolved_pdf_url": final_url,
+                        "saved_pdf_path": path,
+                        "failure_reason": None,
+                        "failure_category": None,
+                        "download_source": label,
+                        "download_mode": mode,
+                        "manual_download_recommended": "NO",
+                        "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]),
+                    })
+                    return {
+                        "status": "success",
+                        "record": record,
+                        "saved_pdf_path": path,
+                        "message": f"✅ Downloaded ({label}): {title}",
+                    }
             except Exception as e:
                 last_error = e
 
@@ -427,9 +581,7 @@ def process_single_paper(index, row_dict, output_dir):
             "download_source": "None",
             "download_mode": None,
             "manual_download_recommended": "YES",
-            "attempted_sources": " | ".join(
-                [f"{src}: {url}" for src, url in candidate_attempts]
-            ) if candidate_attempts else None,
+            "attempted_sources": " | ".join([f"{src}: {url}" for src, url in candidate_attempts]) if candidate_attempts else None,
         })
         return {
             "status": "failed",
@@ -466,7 +618,6 @@ def download_pdfs(
         return downloaded_paths, report_df
 
     max_workers = max(1, min(int(max_workers), total))
-
     rows = [(i, row.to_dict()) for i, (_, row) in enumerate(df.iterrows(), start=1)]
 
     completed = 0
@@ -501,26 +652,10 @@ def download_pdfs(
             if delay > 0:
                 sleep(delay)
 
-    # Sort report by original processing index if available from saved path prefix
-    def extract_index(rec):
-        path = str(rec.get("saved_pdf_path") or "")
-        if path:
-            name = os.path.basename(path)
-            m = re.match(r"^(\d+)_", name)
-            if m:
-                return int(m.group(1))
-        return 10**9
-
     report_df = pd.DataFrame(results)
 
     if not report_df.empty:
-        # keep a more stable readable order if original title rows got mixed by parallel completion
-        report_df["_sort_order"] = range(len(report_df))
         report_df.to_excel(report_path, index=False)
-
-        if "_sort_order" in report_df.columns:
-            report_df = report_df.drop(columns=["_sort_order"], errors="ignore")
-            report_df.to_excel(report_path, index=False)
 
     st.info(f"📄 Download report saved to: {report_path}")
 
