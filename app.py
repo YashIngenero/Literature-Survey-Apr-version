@@ -278,7 +278,6 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
         
         # ✅ ADD HERE (Column reorder block)
         priority_cols = [
-            "Selected",
             "Relevance Score",
             "Paper Title",
             "Publication Year",
