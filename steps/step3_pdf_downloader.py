@@ -9,6 +9,12 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # ================= CONFIG =================
 HEADERS = {
@@ -67,6 +73,86 @@ def normalize_doi_url(doi):
 
     return f"https://doi.org/{doi}"
 
+def try_selenium_sciencedirect_pdf(source_url, path):
+    """
+    Open ScienceDirect article page in a real browser and try to capture/download the PDF.
+    Returns: (downloaded_path, mode, final_url)
+    """
+    if not is_valid_url(source_url):
+        return None, "INVALID_URL", None
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+
+    driver = None
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(source_url)
+
+        wait = WebDriverWait(driver, 20)
+
+        # Wait for page to load
+        wait.until(lambda d: "sciencedirect.com" in d.current_url.lower())
+
+        article_url = driver.current_url
+
+        # Try common PDF/view selectors
+        selectors = [
+            "//a[contains(., 'View PDF')]",
+            "//a[contains(., 'Download PDF')]",
+            "//button[contains(., 'View PDF')]",
+            "//button[contains(., 'Download PDF')]",
+            "//a[contains(@href, '/pdf')]",
+            "//a[contains(@href, '/pdfft')]",
+        ]
+
+        pdf_url = None
+
+        for selector in selectors:
+            try:
+                elem = wait.until(EC.presence_of_element_located((By.XPATH, selector)))
+                href = elem.get_attribute("href")
+                if href and ("/pdf" in href or "/pdfft" in href or ".pdf" in href.lower()):
+                    pdf_url = href
+                    break
+            except Exception:
+                pass
+
+        # Fallback: scan page source
+        if not pdf_url:
+            html = driver.page_source
+            pdf_url = extract_pdf_from_html(html, article_url)
+
+        if not pdf_url:
+            return None, "SELENIUM_NO_PDF_FOUND", article_url
+
+        # Use requests with browser referer after extracting real PDF URL
+        session = get_requests_session()
+        downloaded_path, mode, final_pdf_url = try_direct_download(
+            pdf_url,
+            path,
+            session=session,
+            referer=article_url,
+        )
+
+        if downloaded_path:
+            return downloaded_path, "SELENIUM_SCIENCEDIRECT", final_pdf_url
+
+        return None, mode, final_pdf_url
+
+    except Exception as e:
+        return None, f"SELENIUM_FAILED: {e}", None
+
+    finally:
+        if driver:
+            driver.quit()
+
+
+
 
 def is_probably_pdf(resp):
     ctype = resp.headers.get("Content-Type", "").lower()
@@ -111,6 +197,15 @@ def classify_failure_reason(error_text):
     if "unpaywall" in text:
         return "UNPAYWALL_ERROR"
     if "403" in text and "sciencedirect_public_route_failed" in text:
+        return "SCIENCEDIRECT_403_BLOCKED"
+
+    if "selenium_sciencedirect" in text:
+        return "SELENIUM_SCIENCEDIRECT"
+    if "selenium_no_pdf_found" in text:
+        return "SELENIUM_NO_PDF_FOUND"
+    if "selenium_failed" in text:
+        return "SELENIUM_FAILED"
+    if "sciencedirect_public_route_failed" in text and "403" in text:
         return "SCIENCEDIRECT_403_BLOCKED"
     if "all sources failed" in text:
         return "ALL_SOURCES_FAILED"
@@ -642,6 +737,35 @@ def process_single_paper(index, row_dict, output_dir):
             "saved_pdf_path": None,
             "message": f"❌ Failed: {title} — {e}",
         }
+
+        # ---------- 🔟 Selenium fallback for ScienceDirect 403 ----------
+        should_try_selenium = False
+        if last_error:
+            err_text = str(last_error).lower()
+            if "sciencedirect_public_route_failed" in err_text and "403" in err_text:
+                should_try_selenium = True
+
+        if should_try_selenium:
+            selenium_sources = []
+            if is_valid_url(doi_url):
+                selenium_sources.append(("Selenium ScienceDirect from DOI", doi_url))
+            if is_valid_url(paper_link):
+                selenium_sources.append(("Selenium ScienceDirect from Paper Link", paper_link))
+            if is_valid_url(pdf_link):
+                selenium_sources.append(("Selenium ScienceDirect from PDF Link", pdf_link))
+
+            for label, src_url in selenium_sources:
+                try:
+                    candidate_attempts.append((label, src_url))
+                    direct_path, mode, final_url = try_selenium_sciencedirect_pdf(src_url, path)
+                    if direct_path:
+                        return success_response(
+                            record, path, title, label, mode, final_url,
+                            candidate_attempts, f"✅ Downloaded ({label}): {title}"
+                        )
+                    last_error = set_last_error(last_error, mode)
+                except Exception as e:
+                    last_error = e
 
 
 # ================= MAIN FUNCTION =================
