@@ -12,3 +12,4 @@ openpyxl
 tenacity
 pyspellchecker
 google-generativeai
+google-genai
