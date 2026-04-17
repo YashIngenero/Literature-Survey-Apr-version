@@ -11,7 +11,7 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from google import genai
+import google.generativeai as genai
 from google.genai import types
 
 # =========================================================
@@ -178,7 +178,7 @@ def get_local_genai_client():
     """
     Initialize GenAI client from environment or .env for local testing.
     """
-    load_dotenv()
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     api_key = st.secrets["GOOGLE_API_KEY"]
     
 
