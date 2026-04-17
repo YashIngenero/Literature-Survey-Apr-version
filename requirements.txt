@@ -1,0 +1,14 @@
+streamlit
+pandas
+requests
+tqdm
+pymupdf
+python-docx
+groq
+beautifulsoup4
+lxml
+xlsxwriter
+openpyxl
+tenacity
+pyspellchecker
+
