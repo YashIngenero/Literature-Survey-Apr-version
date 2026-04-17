@@ -301,7 +301,7 @@ if "step1_df" in st.session_state:
     #st.subheader("📄 All Results")
     #st.dataframe(df, use_container_width=True)
     with st.expander("📄 All Results", expanded=False):
-    st.dataframe(df, use_container_width=True)
+        st.dataframe(df, use_container_width=True)
 
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
