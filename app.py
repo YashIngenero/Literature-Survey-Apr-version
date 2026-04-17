@@ -292,50 +292,38 @@ if "step1_df" in st.session_state:
 
     st.success(f"{len(df)} papers retrieved.")
 
-    #st.subheader("📊 Source Distribution")
-    #st.bar_chart(df["Source"].value_counts())
-
-    #st.subheader("🏆 Top 10 Most Cited Papers")
-    #st.dataframe(df.head(10), use_container_width=True)
-
-    #st.subheader("📄 All Results")
-    #st.dataframe(df, use_container_width=True)
     with st.expander("📄 All Results", expanded=False):
         st.dataframe(df, use_container_width=True)
 
-   # Open Access expander
-with st.expander("🔓 Open Access Results", expanded=False):
-    oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
+    with st.expander("🔓 Open Access Results", expanded=False):
+        oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
 
-    if not oa_df.empty:
-        st.write(f"Total Open Access Papers: {len(oa_df)}")
-        st.dataframe(oa_df, use_container_width=True)
+        if not oa_df.empty:
+            st.write(f"Total Open Access Papers: {len(oa_df)}")
+            st.dataframe(oa_df, use_container_width=True)
 
-        # Generate filename
-        now = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        keyword_clean = main_keyword.replace(" ", "_").replace(",", "")
-        
-        file_name = f"{keyword_clean}_{now}_open_access.xlsx"
+            now = datetime.now().strftime("%Y-%m-%d_%H-%M")
+            keyword_clean = query.strip().replace(" ", "_").replace(",", "")
+            keyword_clean = keyword_clean if keyword_clean else "search"
 
-        # Convert to Excel
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            oa_df.to_excel(writer, index=False, sheet_name="Open_Access_Data")
+            oa_file_name = f"{keyword_clean}_{now}_open_access.xlsx"
 
-        output.seek(0)
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                oa_df.to_excel(writer, index=False, sheet_name="Open_Access_Data")
+            output.seek(0)
 
-        # Download button
-        st.download_button(
-            label="📥 Download Open Access (Excel)",
-            data=output,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+            st.download_button(
+                label="📥 Download Open Access (Excel)",
+                data=output,
+                file_name=oa_file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_open_access_excel",
+            )
+        else:
+            st.info("No Open Access papers found.")
 
-    else:
-        st.info("No Open Access papers found.")
-
-    buffer = io.BytesIO()
+    buffer = BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
 
