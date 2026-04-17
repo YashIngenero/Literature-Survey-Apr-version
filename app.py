@@ -303,7 +303,7 @@ if "step1_df" in st.session_state:
             st.write(f"Total Open Access Papers: {len(oa_df)}")
             st.dataframe(oa_df, use_container_width=True)
 
-            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+            now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
             keyword_clean = query.strip().replace(" ", "_").replace(",", "")
 
             keyword_clean = keyword_clean if keyword_clean else "search"
