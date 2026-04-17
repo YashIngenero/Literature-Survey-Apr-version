@@ -283,6 +283,7 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
             "Publication Year",
             "Publication Type",
             "Author Names"
+            "Abstract"
         ]
         
         for col in priority_cols:
