@@ -303,6 +303,15 @@ if "step1_df" in st.session_state:
     with st.expander("📄 All Results", expanded=False):
         st.dataframe(df, use_container_width=True)
 
+    # Open Access only
+    with st.expander("🔓 Open Access Results", expanded=False):
+        oa_df = df[df["Open Access"] == True]
+        
+        if not oa_df.empty:
+            st.dataframe(oa_df, use_container_width=True)
+        else:
+            st.info("No Open Access papers found.")
+
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
