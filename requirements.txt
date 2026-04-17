@@ -11,4 +11,4 @@ xlsxwriter
 openpyxl
 tenacity
 pyspellchecker
-
+google-generativeai
