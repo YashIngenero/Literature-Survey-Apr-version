@@ -110,8 +110,8 @@ def classify_failure_reason(error_text):
         return "NO_OPEN_ACCESS_PDF"
     if "unpaywall" in text:
         return "UNPAYWALL_ERROR"
-    if "sciencedirect_public_route_failed" in text:
-        return "SCIENCEDIRECT_PUBLIC_ROUTE_FAILED"
+    if "403" in text and "sciencedirect_public_route_failed" in text:
+        return "SCIENCEDIRECT_403_BLOCKED"
     if "all sources failed" in text:
         return "ALL_SOURCES_FAILED"
 
