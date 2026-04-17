@@ -12,9 +12,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ================= CONFIG =================
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
     "Accept": "application/pdf,application/xhtml+xml,text/html;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 UNPAYWALL_EMAIL = "ysalvekar@ingenero.com"
@@ -97,6 +103,38 @@ def get_requests_session():
     session.headers.update(HEADERS)
     return session
 
+#
+def try_article_page_pdf_extraction(source_url, path, session=None):
+    if not is_valid_url(source_url):
+        return None, "INVALID_URL", None
+
+    session = session or get_requests_session()
+
+    r = session.get(
+        source_url,
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True,
+    )
+    r.raise_for_status()
+
+    article_url = r.url
+    pdf_url = extract_pdf_from_html(r.text, article_url)
+    if not pdf_url:
+        return None, "ARTICLE_PAGE_NO_PDF", article_url
+
+    downloaded_path, mode, final_pdf_url = try_direct_download(
+        pdf_url,
+        path,
+        session=session,
+        referer=article_url,
+    )
+    return downloaded_path, "ARTICLE_PAGE_EXTRACTED", final_pdf_url
+    
+
+
+
+
 
 def try_direct_download(url, path, session=None, referer=None):
     if not is_valid_url(url):
@@ -107,6 +145,7 @@ def try_direct_download(url, path, session=None, referer=None):
     headers = HEADERS.copy()
     if referer:
         headers["Referer"] = referer
+        headers["Origin"] = f"{requests.utils.urlparse(referer).scheme}://{requests.utils.urlparse(referer).netloc}"
 
     r = session.get(
         url,
@@ -131,18 +170,43 @@ def try_direct_download(url, path, session=None, referer=None):
 def extract_pdf_from_html(html, base_url):
     soup = BeautifulSoup(html, "html.parser")
 
-    meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
-    if meta and meta.get("content"):
-        return urljoin(base_url, meta["content"])
+    # 1) Standard metadata
+    meta_names = [
+        "citation_pdf_url",
+        "wkhealth_pdf_url",
+        "pdf_url",
+    ]
+    for name in meta_names:
+        meta = soup.find("meta", attrs={"name": name})
+        if meta and meta.get("content"):
+            return urljoin(base_url, meta["content"])
 
+    # 2) Look for obvious href/src/data links
     for tag in soup.find_all(["a", "iframe", "embed", "object"]):
         href = tag.get("href") or tag.get("src") or tag.get("data")
-        if href and ".pdf" in href.lower():
-            return urljoin(base_url, href)
+        if href:
+            href_low = href.lower()
+            if ".pdf" in href_low or "/pdf" in href_low or "/pdfft" in href_low:
+                return urljoin(base_url, href)
 
-    matches = re.findall(r"https?://[^\s\"']+\.pdf", html)
-    if matches:
-        return matches[0]
+    # 3) JSON/script patterns commonly seen on publisher pages
+    patterns = [
+        r'"pdfUrl":"([^"]+)"',
+        r'"downloadPdfUrl":"([^"]+)"',
+        r'"linkToPdf":"([^"]+)"',
+        r'"pdfDownload":\{"linkToPdf":"([^"]+)"',
+        r'"url":"([^"]*\/pdfft\?[^"]+)"',
+        r'"url":"([^"]*\/pdf[^"]*)"',
+        r'https?://[^\s"\']+\.pdf(?:\?[^\s"\']*)?',
+        r'https?://[^\s"\']+/pdfft\?[^\s"\']+',
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, html, flags=re.I)
+        if m:
+            found = m.group(1) if m.groups() else m.group(0)
+            found = found.replace("\\u002F", "/").replace("\\/", "/")
+            return urljoin(base_url, found)
 
     return None
 
@@ -533,6 +597,37 @@ def process_single_paper(index, row_dict, output_dir):
             except Exception as e:
                 last_error = e
 
+        12
+        # ---------- 7️⃣ Article-page extraction from DOI ----------
+        if is_valid_url(doi_url):
+            try:
+                candidate_attempts.append(("Article page extraction from DOI", doi_url))
+                direct_path, mode, final_url = try_article_page_pdf_extraction(
+                    doi_url, path, session=session
+                )
+                if direct_path:
+                    record.update({
+                        "download_status": "success",
+                        "resolved_pdf_url": final_url,
+                        "saved_pdf_path": path,
+                        "failure_reason": None,
+                        "failure_category": None,
+                        "download_source": "Article page extraction from DOI",
+                        "download_mode": mode,
+                        "manual_download_recommended": "NO",
+                        "attempted_sources": " | ".join(
+                            [f"{src}: {url}" for src, url in candidate_attempts]
+                        ),
+                    })
+                    return {
+                        "status": "success",
+                        "record": record,
+                        "saved_pdf_path": path,
+                        "message": f"✅ Downloaded (article-page extraction): {title}",
+                    }
+            except Exception as e:
+                last_error = e
+        
         # ---------- 7️⃣ ScienceDirect / Elsevier PII fallback ----------
         sciencedirect_sources = []
         if is_valid_url(pdf_link):
