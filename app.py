@@ -331,7 +331,7 @@ if "step1_df" in st.session_state:
 
     query_for_filename = st.session_state.get("query_input", "").strip()
     safe_query = safe_query_filename(query_for_filename)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")   #datetime.now().strftime("%Y%m%d_%H%M%S")
     file_name = f"Raw_{safe_query}_{timestamp}.xlsx"
 
     st.download_button(
