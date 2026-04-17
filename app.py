@@ -303,23 +303,37 @@ if "step1_df" in st.session_state:
     with st.expander("📄 All Results", expanded=False):
         st.dataframe(df, use_container_width=True)
 
-    # Open Access only
-    with st.expander("🔓 Open Access Results", expanded=False):
-        oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
-    
-        if not oa_df.empty:
-            st.write(f"Total Open Access Papers: {len(oa_df)}")
-            st.dataframe(oa_df, use_container_width=True)
-    
-            csv = oa_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download Open Access Results",
-                data=csv,
-                file_name="open_access_results.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("No Open Access papers found.")
+   # Open Access expander
+with st.expander("🔓 Open Access Results", expanded=False):
+    oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
+
+    if not oa_df.empty:
+        st.write(f"Total Open Access Papers: {len(oa_df)}")
+        st.dataframe(oa_df, use_container_width=True)
+
+        # Generate filename
+        now = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        keyword_clean = main_keyword.replace(" ", "_").replace(",", "")
+        
+        file_name = f"{main_keyword}_{now}_open_access.xlsx"
+
+        # Convert to Excel
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            oa_df.to_excel(writer, index=False, sheet_name="Open_Access_Data")
+
+        output.seek(0)
+
+        # Download button
+        st.download_button(
+            label="📥 Download Open Access (Excel)",
+            data=output,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    else:
+        st.info("No Open Access papers found.")
 
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
