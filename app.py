@@ -315,7 +315,7 @@ with st.expander("🔓 Open Access Results", expanded=False):
         now = datetime.now().strftime("%Y-%m-%d_%H-%M")
         keyword_clean = main_keyword.replace(" ", "_").replace(",", "")
         
-        file_name = f"{main_keyword}_{now}_open_access.xlsx"
+        file_name = f"{keyword_clean}_{now}_open_access.xlsx"
 
         # Convert to Excel
         output = BytesIO()
