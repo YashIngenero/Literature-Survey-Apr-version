@@ -275,6 +275,24 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
             max_year=max_year,
         )
 
+        
+        # ✅ ADD HERE (Column reorder block)
+        priority_cols = [
+            "Selected",
+            "Relevance Score",
+            "Paper Title",
+            "Publication Year",
+            "Publication Type",
+            "Author Names"
+        ]
+        
+        for col in priority_cols:
+            if col not in df.columns:
+                df[col] = None
+        
+        remaining_cols = [col for col in df.columns if col not in priority_cols]
+        df = df[priority_cols + remaining_cols]
+
         if isinstance(df, tuple):
             df = df[0]
 
