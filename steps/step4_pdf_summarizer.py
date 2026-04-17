@@ -3,7 +3,6 @@ import re
 import time
 import tempfile
 from io import BytesIO
-from pathlib import Path
 
 import streamlit as st
 
@@ -11,7 +10,7 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-import google.generativeai as genai
+from google import genai
 from google.genai import types
 
 # =========================================================
@@ -161,31 +160,21 @@ Final Rules:
 # =========================================================
 # HELPERS
 # =========================================================
-def get_streamlit_genai_client():
+def get_genai_client():
     """
-    Initialize GenAI client from Streamlit secrets.
+    Initialize GenAI client from Streamlit secrets first,
+    then fall back to environment variable for local testing.
     """
+    api_key = None
+
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
     except Exception:
-        st.error("Please set GOOGLE_API_KEY in .streamlit/secrets.toml")
-        st.stop()
-
-    return genai.Client(api_key=api_key)
-
-
-def get_local_genai_client():
-    """
-    Initialize GenAI client from environment or .env for local testing.
-    """
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    api_key = st.secrets["GOOGLE_API_KEY"]
-    
+        api_key = os.getenv("GOOGLE_API_KEY")
 
     if not api_key:
-        raise ValueError(
-            "GOOGLE_API_KEY not found. Set it in .env or as an environment variable."
-        )
+        st.error("GOOGLE_API_KEY not found. Add it in Streamlit Secrets or environment variables.")
+        st.stop()
 
     return genai.Client(api_key=api_key)
 
@@ -317,10 +306,10 @@ def generate_summary_from_pdf(client, model_name: str, uploaded_file) -> str:
 
         remote_file = client.files.upload(
             file=temp_path,
-            config={
-                "mime_type": "application/pdf",
-                "display_name": uploaded_file.name,
-            },
+            config=types.UploadFileConfig(
+                mime_type="application/pdf",
+                display_name=uploaded_file.name,
+            ),
         )
 
         last_error = None
@@ -328,15 +317,12 @@ def generate_summary_from_pdf(client, model_name: str, uploaded_file) -> str:
         for current_model in models_to_try:
             for attempt in range(1, max_retries_per_model + 1):
                 try:
-                    print(
-                        f"Trying model={current_model}, "
-                        f"attempt={attempt}/{max_retries_per_model}, "
-                        f"file={uploaded_file.name}"
-                    )
-
                     response = client.models.generate_content(
                         model=current_model,
-                        contents=[ADOBE_PROMPT, remote_file],
+                        contents=[
+                            types.Part.from_text(text=ADOBE_PROMPT),
+                            remote_file,
+                        ],
                         config=types.GenerateContentConfig(
                             system_instruction=SYSTEM_INSTRUCTION,
                             temperature=0.2,
@@ -355,7 +341,16 @@ def generate_summary_from_pdf(client, model_name: str, uploaded_file) -> str:
 
                     is_retryable = any(
                         token in error_text
-                        for token in ["503", "UNAVAILABLE", "500", "INTERNAL", "RESOURCE_EXHAUSTED", "429"]
+                        for token in [
+                            "503",
+                            "UNAVAILABLE",
+                            "500",
+                            "INTERNAL",
+                            "RESOURCE_EXHAUSTED",
+                            "429",
+                            "rate limit",
+                            "quota",
+                        ]
                     )
 
                     if not is_retryable:
@@ -363,16 +358,9 @@ def generate_summary_from_pdf(client, model_name: str, uploaded_file) -> str:
 
                     if attempt < max_retries_per_model:
                         wait_time = base_wait * (2 ** (attempt - 1))
-                        print(
-                            f"Retryable error on {current_model}: {error_text}\n"
-                            f"Waiting {wait_time} seconds before retry..."
-                        )
                         time.sleep(wait_time)
                     else:
-                        print(
-                            f"Model {current_model} failed after "
-                            f"{max_retries_per_model} attempts."
-                        )
+                        pass
 
         raise RuntimeError(
             f"All model attempts failed for {uploaded_file.name}. Last error: {last_error}"
@@ -396,15 +384,17 @@ def process_papers(uploaded_files, model_name: str, pause_seconds: float):
     """
     Process all uploaded PDFs and return generated DOCX bytes.
     """
-    client = get_streamlit_genai_client()
+    client = get_genai_client()
     results = {}
 
     overall_progress = st.progress(0.0)
     status_box = st.empty()
 
+    total_files = len(uploaded_files)
+
     for idx, uploaded_file in enumerate(uploaded_files, start=1):
         filename = uploaded_file.name
-        status_box.info(f"Processing {filename} ({idx}/{len(uploaded_files)})")
+        status_box.info(f"Processing {filename} ({idx}/{total_files})")
 
         try:
             summary_text = generate_summary_from_pdf(
@@ -422,9 +412,9 @@ def process_papers(uploaded_files, model_name: str, pause_seconds: float):
         except Exception as e:
             st.error(f"Error processing {filename}: {e}")
 
-        overall_progress.progress(idx / len(uploaded_files))
+        overall_progress.progress(idx / total_files)
 
-        if idx < len(uploaded_files):
+        if idx < total_files and pause_seconds > 0:
             time.sleep(pause_seconds)
 
     status_box.success("All summaries generated.")
@@ -492,3 +482,6 @@ def summarize_pdfs():
                         key=doc_name,
                     )
 
+
+if __name__ == "__main__":
+    summarize_pdfs()
