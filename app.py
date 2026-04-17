@@ -305,10 +305,19 @@ if "step1_df" in st.session_state:
 
     # Open Access only
     with st.expander("🔓 Open Access Results", expanded=False):
-        oa_df = df[df["Open Access"] == True]
-        
+        oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
+    
         if not oa_df.empty:
+            st.write(f"Total Open Access Papers: {len(oa_df)}")
             st.dataframe(oa_df, use_container_width=True)
+    
+            csv = oa_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download Open Access Results",
+                data=csv,
+                file_name="open_access_results.csv",
+                mime="text/csv",
+            )
         else:
             st.info("No Open Access papers found.")
 
