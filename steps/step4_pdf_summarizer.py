@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
-from dotenv import load_dotenv
+
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -179,7 +179,8 @@ def get_local_genai_client():
     Initialize GenAI client from environment or .env for local testing.
     """
     load_dotenv()
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    
 
     if not api_key:
         raise ValueError(
