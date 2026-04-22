@@ -10,15 +10,15 @@ from urllib3.util.retry import Retry
 # CONFIG
 # =========================================================
 SEMANTIC_PAGE_SIZE = 50
-SEMANTIC_MAX_RESULTS = 500 #400
-OPENALEX_MAX_RESULTS = 500 #400
-ARXIV_MAX_RESULTS = 400 #300
+SEMANTIC_MAX_RESULTS = 500
+OPENALEX_MAX_RESULTS = 500
+ARXIV_MAX_RESULTS = 400
 
 API_THREADS = 3
 PAGE_THREADS = 6
 
 CACHE_FOLDER = "cache"
-CACHE_VERSION = "v4_fast_csv_no_alt_pairs"
+CACHE_VERSION = "v5_yearwise_optional_csv"
 USER_AGENT = "AutoLiteratureSurvey/1.0 (mailto:test@example.com)"
 
 # =========================================================
@@ -27,6 +27,7 @@ USER_AGENT = "AutoLiteratureSurvey/1.0 (mailto:test@example.com)"
 def normalize_title(title):
     return re.sub(r"\W+", "", title.lower()) if title else None
 
+
 def normalize_doi_to_url(doi):
     if not doi:
         return None
@@ -34,17 +35,21 @@ def normalize_doi_to_url(doi):
     doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").replace("doi:", "")
     return f"https://doi.org/{doi}" if doi else None
 
+
 def year_is_valid(year, min_year, max_year):
     return year is None or (min_year <= year <= max_year)
 
+
 def is_review_paper(title):
     return "YES" if title and "review" in title.lower() else "NO"
+
 
 def safe_int(value, default=0):
     try:
         return int(value)
     except Exception:
         return default
+
 
 def get_retry_session():
     session = requests.Session()
@@ -63,10 +68,13 @@ def get_retry_session():
     session.headers.update({"User-Agent": USER_AGENT})
     return session
 
-def get_cache_path(query, min_year, max_year):
+
+def get_cache_path(query, min_year, max_year, year_wise=False):
     safe = re.sub(r"\W+", "_", query.lower())[:120]
-    filename = f"{safe}_{min_year}_{max_year}_{CACHE_VERSION}.csv"
+    mode = "yearwise" if year_wise else "range"
+    filename = f"{safe}_{min_year}_{max_year}_{mode}_{CACHE_VERSION}.csv"
     return os.path.join(CACHE_FOLDER, filename)
+
 
 def blank_record():
     return {
@@ -124,6 +132,7 @@ def invert_openalex_abstract(abstract_inverted_index):
     except Exception:
         return None
 
+
 def extract_openalex_ids(item):
     """
     Extract external IDs from OpenAlex work object.
@@ -154,6 +163,7 @@ def extract_openalex_ids(item):
         "arXiv ID": arxiv_id,
         "OpenAlex ID": openalex_id,
     }
+
 
 def choose_best_paper_link(item):
     """
@@ -202,6 +212,7 @@ def build_query_legs(main_keyword, alt_keywords):
 
     return list(dict.fromkeys(queries))
 
+
 def format_query_for_api(query, source):
     if source == "openalex":
         return query.replace('"', "")
@@ -231,6 +242,7 @@ def fetch_semantic_page(session, query, offset):
     except Exception as e:
         print(f"Semantic Scholar page error at offset {offset}: {e}")
         return []
+
 
 def search_semantic_scholar(query, min_year, max_year):
     session = get_retry_session()
@@ -395,6 +407,7 @@ def fetch_arxiv_page(session, query, start):
         print(f"arXiv page error at start {start}: {e}")
         return []
 
+
 def search_arxiv(query, min_year, max_year):
     session = get_retry_session()
     results = []
@@ -460,6 +473,7 @@ def normalize_text_for_match(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+
 def keyword_in_text(keyword, text):
     """
     Exact phrase match using word boundaries.
@@ -473,6 +487,7 @@ def keyword_in_text(keyword, text):
 
     pattern = r'(?<!\w)' + re.escape(keyword) + r'(?!\w)'
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
 
 def extract_matched_keywords(paper, main_keywords, alt_keywords):
     title = normalize_text_for_match(paper.get("Paper Title"))
@@ -496,6 +511,7 @@ def extract_matched_keywords(paper, main_keywords, alt_keywords):
     matched_alt = list(dict.fromkeys(matched_alt))
 
     return matched_main, matched_alt
+
 
 def relevance_score_and_matches(paper, main_keywords, alt_keywords):
     matched_main, matched_alt = extract_matched_keywords(
@@ -547,46 +563,93 @@ def merge_records(records):
     return list(merged.values())
 
 # =========================================================
+# INTERNAL RUN HELPERS
+# =========================================================
+def run_single_query_leg(query, min_year, max_year):
+    ss_query = format_query_for_api(query, "semantic")
+    oa_query = format_query_for_api(query, "openalex")
+    ax_query = format_query_for_api(query, "arxiv")
+
+    with ThreadPoolExecutor(max_workers=API_THREADS) as executor:
+        ss_future = executor.submit(search_semantic_scholar, ss_query, min_year, max_year)
+        oa_future = executor.submit(search_openalex, oa_query, min_year, max_year)
+        ax_future = executor.submit(search_arxiv, ax_query, min_year, max_year)
+
+        combined = ss_future.result() + oa_future.result() + ax_future.result()
+
+    return combined
+
+
+def collect_results_for_query_legs(query_legs, min_year, max_year, year_wise=False):
+    all_results = []
+
+    if not year_wise:
+        for query in query_legs:
+            cache_path = get_cache_path(query, min_year, max_year, year_wise=False)
+
+            if os.path.exists(cache_path):
+                print(f"📦 Loading cache: {query} | {min_year}-{max_year}")
+                try:
+                    cached_df = pd.read_csv(cache_path)
+                    all_results.extend(cached_df.to_dict("records"))
+                    continue
+                except Exception as e:
+                    print(f"Cache read failed, re-running query. Error: {e}")
+
+            print(f"🔍 Running query: {query} | Years: {min_year}-{max_year}")
+            combined = run_single_query_leg(query, min_year, max_year)
+
+            if combined:
+                try:
+                    pd.DataFrame(combined).to_csv(cache_path, index=False)
+                except Exception as e:
+                    print(f"Cache write failed for query {query}: {e}")
+
+            all_results.extend(combined)
+
+        return all_results
+
+    # Year-wise mode
+    for year in range(min_year, max_year + 1):
+        for query in query_legs:
+            cache_path = get_cache_path(query, year, year, year_wise=True)
+
+            if os.path.exists(cache_path):
+                print(f"📦 Loading year-wise cache: {query} | {year}")
+                try:
+                    cached_df = pd.read_csv(cache_path)
+                    all_results.extend(cached_df.to_dict("records"))
+                    continue
+                except Exception as e:
+                    print(f"Year-wise cache read failed, re-running query. Error: {e}")
+
+            print(f"🔍 Running year-wise query: {query} | Year: {year}")
+            combined = run_single_query_leg(query, year, year)
+
+            if combined:
+                try:
+                    pd.DataFrame(combined).to_csv(cache_path, index=False)
+                except Exception as e:
+                    print(f"Year-wise cache write failed for query {query}, year {year}: {e}")
+
+            all_results.extend(combined)
+
+    return all_results
+
+# =========================================================
 # MAIN
 # =========================================================
-def run_literature_search(main_keyword, alt_keywords, min_year, max_year):
+def run_literature_search(main_keyword, alt_keywords, min_year, max_year, year_wise=False):
     os.makedirs(CACHE_FOLDER, exist_ok=True)
 
     query_legs = build_query_legs(main_keyword, alt_keywords)
-    all_results = []
 
-    for query in query_legs:
-        cache_path = get_cache_path(query, min_year, max_year)
-
-        if os.path.exists(cache_path):
-            print(f"📦 Loading cache: {query}")
-            try:
-                cached_df = pd.read_csv(cache_path)
-                all_results.extend(cached_df.to_dict("records"))
-                continue
-            except Exception as e:
-                print(f"Cache read failed, re-running query. Error: {e}")
-
-        print(f"🔍 Running query: {query}")
-
-        ss_query = format_query_for_api(query, "semantic")
-        oa_query = format_query_for_api(query, "openalex")
-        ax_query = format_query_for_api(query, "arxiv")
-
-        with ThreadPoolExecutor(max_workers=API_THREADS) as executor:
-            ss_future = executor.submit(search_semantic_scholar, ss_query, min_year, max_year)
-            oa_future = executor.submit(search_openalex, oa_query, min_year, max_year)
-            ax_future = executor.submit(search_arxiv, ax_query, min_year, max_year)
-
-            combined = ss_future.result() + oa_future.result() + ax_future.result()
-
-        if combined:
-            try:
-                pd.DataFrame(combined).to_csv(cache_path, index=False)
-            except Exception as e:
-                print(f"Cache write failed for query {query}: {e}")
-
-        all_results.extend(combined)
+    all_results = collect_results_for_query_legs(
+        query_legs=query_legs,
+        min_year=min_year,
+        max_year=max_year,
+        year_wise=year_wise,
+    )
 
     merged = merge_records(all_results)
     df = pd.DataFrame(merged)
@@ -631,4 +694,3 @@ def run_literature_search(main_keyword, alt_keywords, min_year, max_year):
     )
 
     return df
-
