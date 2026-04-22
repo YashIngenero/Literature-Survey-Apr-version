@@ -179,6 +179,12 @@ alt_keywords_input = st.text_input(
     placeholder="e.g. Primary amine, Secondary amine, blends, CO2 loading",
 )
 
+enable_year_wise = st.checkbox(
+    "Enable year-wise retrieval (slower, but may improve coverage)",
+    value=False,
+    key="step1_year_wise",
+)
+
 # ---------------- SPELL CHECK ----------------
 spell = SpellChecker()
 
@@ -252,6 +258,13 @@ if primary_keywords:
     if len(query_legs_preview) > 20:
         st.caption("Showing first 20 query legs only.")
 
+    if enable_year_wise and min_year <= max_year:
+        total_years = (max_year - min_year) + 1
+        estimated_total_runs = len(query_legs_preview) * total_years
+        st.caption(
+            f"Year-wise mode enabled: {total_years} year slices × {len(query_legs_preview)} query legs = {estimated_total_runs} retrieval runs."
+        )
+
 # ---------------- VALIDATION ----------------
 error_message = None
 
@@ -267,31 +280,20 @@ if error_message:
 search_disabled = error_message is not None
 
 if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"):
-    with st.spinner("Searching literature sources..."):
+    spinner_text = (
+        "Searching literature sources with year-wise retrieval..."
+        if enable_year_wise
+        else "Searching literature sources..."
+    )
+
+    with st.spinner(spinner_text):
         df = run_literature_search(
             main_keyword=query,
             alt_keywords=alt_keywords,
             min_year=min_year,
             max_year=max_year,
+            year_wise=enable_year_wise,
         )
-
-        
-        # ✅ ADD HERE (Column reorder block)
-        priority_cols = [
-            "Relevance Score",
-            "Paper Title",
-            "Publication Year",
-            "Publication Type",
-            "Author Names",
-            "Abstract"
-        ]
-        
-        for col in priority_cols:
-            if col not in df.columns:
-                df[col] = None
-        
-        remaining_cols = [col for col in df.columns if col not in priority_cols]
-        df = df[priority_cols + remaining_cols]
 
         if isinstance(df, tuple):
             df = df[0]
@@ -299,6 +301,25 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
         if df.empty:
             st.warning("No results found. Try broader keywords.")
             st.stop()
+
+        df = normalize_selected_column(df)
+
+        # Column order required by manager
+        priority_cols = [
+            "Selected",
+            "Relevance Score",
+            "Paper Title",
+            "Publication Year",
+            "Publication Type",
+            "Author Names",
+        ]
+
+        for col in priority_cols:
+            if col not in df.columns:
+                df[col] = None
+
+        remaining_cols = [col for col in df.columns if col not in priority_cols]
+        df = df[priority_cols + remaining_cols]
 
         st.session_state["step1_df"] = df
 
@@ -323,7 +344,6 @@ if "step1_df" in st.session_state:
 
             now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
             keyword_clean = query.strip().replace(" ", "_").replace(",", "")
-
             keyword_clean = keyword_clean if keyword_clean else "search"
 
             oa_file_name = f"{keyword_clean}_{now}_open_access.xlsx"
@@ -349,7 +369,7 @@ if "step1_df" in st.session_state:
 
     query_for_filename = st.session_state.get("query_input", "").strip()
     safe_query = safe_query_filename(query_for_filename)
-    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")   #datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
     file_name = f"Raw_{safe_query}_{timestamp}.xlsx"
 
     st.download_button(
