@@ -243,7 +243,7 @@ with col2:
 primary_keywords = [k.strip() for k in query.split(",") if k.strip()]
 alt_keywords = [k.strip() for k in alt_keywords_input.split(",") if k.strip()]
 
-# ---------------- QUERY LEG PREVIEW ----------------
+# ---------------- QUERY PREVIEW ----------------
 if primary_keywords:
     query_legs_preview = []
 
@@ -260,118 +260,8 @@ if primary_keywords:
 
     if enable_year_wise and min_year <= max_year:
         total_years = (max_year - min_year) + 1
-        estimated_total_runs = len(query_legs_preview) * total_years
-        st.caption(
-            f"Year-wise mode enabled: {total_years} year slices × {len(query_legs_preview)} query legs = {estimated_total_runs} retrieval runs."
-        )
-
-# ---------------- VALIDATION ----------------
-error_message = None
-
-if not primary_keywords:
-    error_message = "At least one primary keyword is required."
-elif min_year > max_year:
-    error_message = "Minimum year cannot be g# =====================================================
-# STEP 1 — SEARCH
-# =====================================================
-st.header("Step 1 — Literature Search")
-
-query = st.text_input(
-    "Enter primary keyword(s) (comma-separated)",
-    key="query_input",
-    placeholder="e.g. Carbon Capture, CCU",
-)
-
-alt_keywords_input = st.text_input(
-    "Additional alternate keywords (comma-separated, optional)",
-    placeholder="e.g. Primary amine, Secondary amine, blends, CO2 loading",
-)
-
-enable_year_wise = st.checkbox(
-    "Enable year-wise retrieval (slower, but may improve coverage)",
-    value=False,
-    key="step1_year_wise",
-)
-
-# ---------------- SPELL CHECK ----------------
-spell = SpellChecker()
-
-if query.strip():
-    raw_primary_keywords = [k.strip() for k in query.split(",") if k.strip()]
-    corrected_primary_keywords = []
-
-    for kw in raw_primary_keywords:
-        words = kw.split()
-        misspelled = spell.unknown(words)
-
-        corrected_words = []
-        for word in words:
-            if word in misspelled:
-                suggestion = spell.correction(word)
-                corrected_words.append(suggestion if suggestion else word)
-            else:
-                corrected_words.append(word)
-
-        corrected_primary_keywords.append(" ".join(corrected_words))
-
-    corrected_query = ", ".join(corrected_primary_keywords)
-
-    if corrected_query != query:
-        st.warning(f"Did you mean: **{corrected_query}** ?")
-        st.button(
-            "Apply Correction",
-            on_click=apply_correction,
-            args=(corrected_query,),
-            key="apply_query_correction",
-        )
-
-# ---------------- YEAR FILTERS ----------------
-current_year = datetime.now().year
-year_options = list(range(current_year, 1990, -1))
-
-col1, col2 = st.columns(2)
-
-with col1:
-    min_year = st.selectbox(
-        "Minimum publication year",
-        options=year_options,
-        index=year_options.index(2016) if 2016 in year_options else 0,
-        key="step1_min_year",
-    )
-
-with col2:
-    max_year = st.selectbox(
-        "Maximum publication year",
-        options=year_options,
-        index=0,
-        key="step1_max_year",
-    )
-
-# ---------------- PROCESS KEYWORDS ----------------
-primary_keywords = [k.strip() for k in query.split(",") if k.strip()]
-alt_keywords = [k.strip() for k in alt_keywords_input.split(",") if k.strip()]
-
-# ---------------- QUERY LEG PREVIEW ----------------
-if primary_keywords:
-    query_legs_preview = []
-
-    for primary in primary_keywords:
-        query_legs_preview.append(f'"{primary}"')
-        for alt in alt_keywords:
-            query_legs_preview.append(f'"{primary}" AND "{alt}"')
-
-    st.info(f"🔑 Total query legs to run: {len(query_legs_preview)}")
-    st.code("\n".join(query_legs_preview[:20]))
-
-    if len(query_legs_preview) > 20:
-        st.caption("Showing first 20 query legs only.")
-
-    if enable_year_wise and min_year <= max_year:
-        total_years = (max_year - min_year) + 1
-        estimated_total_runs = len(query_legs_preview) * total_years
-        st.caption(
-            f"Year-wise mode enabled: {total_years} year slices × {len(query_legs_preview)} query legs = {estimated_total_runs} retrieval runs."
-        )
+        total_runs = total_years * len(query_legs_preview)
+        st.caption(f"Year-wise mode: {total_years} years × {len(query_legs_preview)} queries = {total_runs} runs")
 
 # ---------------- VALIDATION ----------------
 error_message = None
@@ -385,18 +275,17 @@ if error_message:
     st.error(error_message)
 
 # ---------------- RUN SEARCH ----------------
-search_disabled = error_message is not None
+if st.button("🔍 Run Search", disabled=error_message is not None):
 
-if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"):
     spinner_text = (
-        "Searching literature sources with year-wise retrieval..."
+        "Running year-wise search (slower, better coverage)..."
         if enable_year_wise
-        else "Searching literature sources..."
+        else "Searching literature..."
     )
 
     with st.spinner(spinner_text):
+
         try:
-            # Preferred call: updated Step 1 function with year_wise support
             df = run_literature_search(
                 main_keyword=query,
                 alt_keywords=alt_keywords,
@@ -405,29 +294,25 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
                 year_wise=enable_year_wise,
             )
         except TypeError:
-            # Fallback if Streamlit is still loading an older imported version
+            # fallback if old version loaded
             df = run_literature_search(
                 main_keyword=query,
                 alt_keywords=alt_keywords,
                 min_year=min_year,
                 max_year=max_year,
             )
-            if enable_year_wise:
-                st.warning(
-                    "Year-wise mode could not be applied because the loaded Step 1 module does not support it yet. "
-                    "Please redeploy/restart the app after updating the Step 1 file."
-                )
 
-        if isinstance(df, tuple):
-            df = df[0]
+            if enable_year_wise:
+                st.warning("⚠ Year-wise mode not active (old Step 1 module loaded). Please redeploy.")
 
         if df.empty:
-            st.warning("No results found. Try broader keywords.")
+            st.warning("No results found.")
             st.stop()
 
+        # ensure Selected column
         df = normalize_selected_column(df)
 
-        # Column order required by manager
+        # column ordering
         priority_cols = [
             "Selected",
             "Relevance Score",
@@ -441,70 +326,36 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
             if col not in df.columns:
                 df[col] = None
 
-        remaining_cols = [col for col in df.columns if col not in priority_cols]
+        remaining_cols = [c for c in df.columns if c not in priority_cols]
         df = df[priority_cols + remaining_cols]
 
         st.session_state["step1_df"] = df
 
-        path = os.path.join(SEARCH_DIR, "step1_raw_results.xlsx")
-        df.to_excel(path, index=False)
-
-# ---------------- DISPLAY RESULTS ----------------
+# ---------------- DISPLAY ----------------
 if "step1_df" in st.session_state:
     df = st.session_state["step1_df"]
 
-    st.success(f"{len(df)} papers retrieved.")
+    st.success(f"{len(df)} papers retrieved")
 
-    with st.expander("📄 All Results", expanded=False):
+    with st.expander("📄 All Results"):
         st.dataframe(df, use_container_width=True)
 
-    with st.expander("🔓 Open Access Results", expanded=False):
-        oa_df = df[df["Open Access"].astype(str).str.lower().isin(["true", "yes"])]
-
-        if not oa_df.empty:
-            st.write(f"Total Open Access Papers: {len(oa_df)}")
-            st.dataframe(oa_df, use_container_width=True)
-
-            now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
-            keyword_clean = query.strip().replace(" ", "_").replace(",", "")
-            keyword_clean = keyword_clean if keyword_clean else "search"
-
-            oa_file_name = f"{keyword_clean}_{now}_open_access.xlsx"
-
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                oa_df.to_excel(writer, index=False, sheet_name="Open_Access_Data")
-            output.seek(0)
-
-            st.download_button(
-                label="📥 Download Open Access (Excel)",
-                data=output,
-                file_name=oa_file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_open_access_excel",
-            )
-        else:
-            st.info("No Open Access papers found.")
-
+    # Download
     buffer = BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
 
-    query_for_filename = st.session_state.get("query_input", "").strip()
-    safe_query = safe_query_filename(query_for_filename)
     timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
-    file_name = f"Raw_{safe_query}_{timestamp}.xlsx"
+    safe_query = safe_query_filename(query)
 
     st.download_button(
-        "⬇ Download Step 1 Results (Excel)",
+        "⬇ Download Results",
         data=buffer,
-        file_name=file_name,
+        file_name=f"{safe_query}_{timestamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_step1_excel",
     )
 
 st.divider()
-
 
 # =====================================================
 # STEP 2 — FILTER, SELECT, OR UPLOAD
