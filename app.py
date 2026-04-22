@@ -271,6 +271,114 @@ error_message = None
 if not primary_keywords:
     error_message = "At least one primary keyword is required."
 elif min_year > max_year:
+    error_message = "Minimum year cannot be g# =====================================================
+# STEP 1 — SEARCH
+# =====================================================
+st.header("Step 1 — Literature Search")
+
+query = st.text_input(
+    "Enter primary keyword(s) (comma-separated)",
+    key="query_input",
+    placeholder="e.g. Carbon Capture, CCU",
+)
+
+alt_keywords_input = st.text_input(
+    "Additional alternate keywords (comma-separated, optional)",
+    placeholder="e.g. Primary amine, Secondary amine, blends, CO2 loading",
+)
+
+enable_year_wise = st.checkbox(
+    "Enable year-wise retrieval (slower, but may improve coverage)",
+    value=False,
+    key="step1_year_wise",
+)
+
+# ---------------- SPELL CHECK ----------------
+spell = SpellChecker()
+
+if query.strip():
+    raw_primary_keywords = [k.strip() for k in query.split(",") if k.strip()]
+    corrected_primary_keywords = []
+
+    for kw in raw_primary_keywords:
+        words = kw.split()
+        misspelled = spell.unknown(words)
+
+        corrected_words = []
+        for word in words:
+            if word in misspelled:
+                suggestion = spell.correction(word)
+                corrected_words.append(suggestion if suggestion else word)
+            else:
+                corrected_words.append(word)
+
+        corrected_primary_keywords.append(" ".join(corrected_words))
+
+    corrected_query = ", ".join(corrected_primary_keywords)
+
+    if corrected_query != query:
+        st.warning(f"Did you mean: **{corrected_query}** ?")
+        st.button(
+            "Apply Correction",
+            on_click=apply_correction,
+            args=(corrected_query,),
+            key="apply_query_correction",
+        )
+
+# ---------------- YEAR FILTERS ----------------
+current_year = datetime.now().year
+year_options = list(range(current_year, 1990, -1))
+
+col1, col2 = st.columns(2)
+
+with col1:
+    min_year = st.selectbox(
+        "Minimum publication year",
+        options=year_options,
+        index=year_options.index(2016) if 2016 in year_options else 0,
+        key="step1_min_year",
+    )
+
+with col2:
+    max_year = st.selectbox(
+        "Maximum publication year",
+        options=year_options,
+        index=0,
+        key="step1_max_year",
+    )
+
+# ---------------- PROCESS KEYWORDS ----------------
+primary_keywords = [k.strip() for k in query.split(",") if k.strip()]
+alt_keywords = [k.strip() for k in alt_keywords_input.split(",") if k.strip()]
+
+# ---------------- QUERY LEG PREVIEW ----------------
+if primary_keywords:
+    query_legs_preview = []
+
+    for primary in primary_keywords:
+        query_legs_preview.append(f'"{primary}"')
+        for alt in alt_keywords:
+            query_legs_preview.append(f'"{primary}" AND "{alt}"')
+
+    st.info(f"🔑 Total query legs to run: {len(query_legs_preview)}")
+    st.code("\n".join(query_legs_preview[:20]))
+
+    if len(query_legs_preview) > 20:
+        st.caption("Showing first 20 query legs only.")
+
+    if enable_year_wise and min_year <= max_year:
+        total_years = (max_year - min_year) + 1
+        estimated_total_runs = len(query_legs_preview) * total_years
+        st.caption(
+            f"Year-wise mode enabled: {total_years} year slices × {len(query_legs_preview)} query legs = {estimated_total_runs} retrieval runs."
+        )
+
+# ---------------- VALIDATION ----------------
+error_message = None
+
+if not primary_keywords:
+    error_message = "At least one primary keyword is required."
+elif min_year > max_year:
     error_message = "Minimum year cannot be greater than maximum year."
 
 if error_message:
@@ -287,13 +395,28 @@ if st.button("🔍 Run Search", disabled=search_disabled, key="run_step1_search"
     )
 
     with st.spinner(spinner_text):
-        df = run_literature_search(
-            main_keyword=query,
-            alt_keywords=alt_keywords,
-            min_year=min_year,
-            max_year=max_year,
-            year_wise=enable_year_wise,
-        )
+        try:
+            # Preferred call: updated Step 1 function with year_wise support
+            df = run_literature_search(
+                main_keyword=query,
+                alt_keywords=alt_keywords,
+                min_year=min_year,
+                max_year=max_year,
+                year_wise=enable_year_wise,
+            )
+        except TypeError:
+            # Fallback if Streamlit is still loading an older imported version
+            df = run_literature_search(
+                main_keyword=query,
+                alt_keywords=alt_keywords,
+                min_year=min_year,
+                max_year=max_year,
+            )
+            if enable_year_wise:
+                st.warning(
+                    "Year-wise mode could not be applied because the loaded Step 1 module does not support it yet. "
+                    "Please redeploy/restart the app after updating the Step 1 file."
+                )
 
         if isinstance(df, tuple):
             df = df[0]
