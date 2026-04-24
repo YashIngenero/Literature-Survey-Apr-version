@@ -196,17 +196,25 @@ def choose_best_paper_link(item):
 # =========================================================
 def build_query_legs(main_keyword, alt_keywords):
     """
-    Faster query strategy:
+    Query strategy:
     - each primary alone
+    - each alternate alone
     - primary + each alt
     """
     queries = []
     primaries = [k.strip() for k in main_keyword.split(",") if k.strip()]
     alt_keywords = [k.strip() for k in (alt_keywords or []) if k.strip()]
 
+    # Primary-only queries
     for primary in primaries:
         queries.append(f'"{primary}"')
 
+    # Alternate-only queries
+    for alt in alt_keywords:
+        queries.append(f'"{alt}"')
+
+    # Primary + Alternate queries
+    for primary in primaries:
         for alt in alt_keywords:
             queries.append(f'"{primary}" AND "{alt}"')
 
@@ -219,6 +227,7 @@ def format_query_for_api(query, source):
     if source == "arxiv":
         return query
     return query
+
 
 # =========================================================
 # SEMANTIC SCHOLAR
