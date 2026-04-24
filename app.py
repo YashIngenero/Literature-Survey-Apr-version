@@ -245,12 +245,10 @@ alt_keywords = [k.strip() for k in alt_keywords_input.split(",") if k.strip()]
 
 # ---------------- QUERY PREVIEW ----------------
 if primary_keywords:
-    query_legs_preview = []
-
-    for primary in primary_keywords:
-        query_legs_preview.append(f'"{primary}"')
-        for alt in alt_keywords:
-            query_legs_preview.append(f'"{primary}" AND "{alt}"')
+    query_legs_preview = build_query_legs(
+        main_keyword=", ".join(primary_keywords),
+        alt_keywords=alt_keywords
+    )
 
     st.info(f"🔑 Total query legs to run: {len(query_legs_preview)}")
     st.code("\n".join(query_legs_preview[:20]))
@@ -261,8 +259,10 @@ if primary_keywords:
     if enable_year_wise and min_year <= max_year:
         total_years = (max_year - min_year) + 1
         total_runs = total_years * len(query_legs_preview)
-        st.caption(f"Year-wise mode: {total_years} years × {len(query_legs_preview)} queries = {total_runs} runs")
-
+        st.caption(
+            f"Year-wise mode: {total_years} years × "
+            f"{len(query_legs_preview)} queries = {total_runs} runs"
+        )
 # ---------------- VALIDATION ----------------
 error_message = None
 
