@@ -247,16 +247,20 @@ alt_keywords = [k.strip() for k in alt_keywords_input.split(",") if k.strip()]
 if primary_keywords:
     query_legs_preview = []
 
+    # 1. Primary-only queries
     for primary in primary_keywords:
         query_legs_preview.append(f'"{primary}"')
-        for alt in alt_keywords:
-            query_legs_preview.append(f'"{primary}" AND "{alt}"')
 
-    # ✅ ADD THIS: Alternate-only queries
+    # 2. Alternate-only queries
     for alt in alt_keywords:
         query_legs_preview.append(f'"{alt}"')
 
-    # ✅ ADD THIS: Remove duplicates
+    # 3. Primary + Alternate queries
+    for primary in primary_keywords:
+        for alt in alt_keywords:
+            query_legs_preview.append(f'"{primary}" AND "{alt}"')
+
+    # Remove duplicates
     query_legs_preview = list(dict.fromkeys(query_legs_preview))
 
     st.info(f"🔑 Total query legs to run: {len(query_legs_preview)}")
@@ -268,8 +272,9 @@ if primary_keywords:
     if enable_year_wise and min_year <= max_year:
         total_years = (max_year - min_year) + 1
         total_runs = total_years * len(query_legs_preview)
-        st.caption(f"Year-wise mode: {total_years} years × {len(query_legs_preview)} queries = {total_runs} runs")
-
+        st.caption(
+            f"Year-wise mode: {total_years} years × {len(query_legs_preview)} queries = {total_runs} runs"
+        )
 
 # ---------------- VALIDATION ----------------
 error_message = None
@@ -293,34 +298,22 @@ if st.button("🔍 Run Search", disabled=error_message is not None):
 
     with st.spinner(spinner_text):
 
-        try:
-            df = run_literature_search(
-                main_keyword=query,
-                alt_keywords=alt_keywords,
-                min_year=min_year,
-                max_year=max_year,
-                year_wise=enable_year_wise,
-            )
-        except TypeError:
-            # fallback if old version loaded
-            df = run_literature_search(
-                main_keyword=query,
-                alt_keywords=alt_keywords,
-                min_year=min_year,
-                max_year=max_year,
-            )
-
-            if enable_year_wise:
-                st.warning("⚠ Year-wise mode not active (old Step 1 module loaded). Please redeploy.")
+        df = run_literature_search(
+            main_keyword=query,
+            alt_keywords=alt_keywords,
+            min_year=min_year,
+            max_year=max_year,
+            year_wise=enable_year_wise,
+        )
 
         if df.empty:
             st.warning("No results found.")
             st.stop()
 
-        # ensure Selected column
+        # Ensure Selected column
         df = normalize_selected_column(df)
 
-        # column ordering
+        # Column ordering
         priority_cols = [
             "Selected",
             "Relevance Score",
@@ -337,7 +330,21 @@ if st.button("🔍 Run Search", disabled=error_message is not None):
         remaining_cols = [c for c in df.columns if c not in priority_cols]
         df = df[priority_cols + remaining_cols]
 
+        # Save full raw search output
         st.session_state["step1_df"] = df
+
+        # Create Open Access only output
+        if "Open Access" in df.columns:
+            oa_df = df[
+                df["Open Access"]
+                .astype(str)
+                .str.lower()
+                .isin(["true", "yes", "1"])
+            ].copy()
+        else:
+            oa_df = pd.DataFrame(columns=df.columns)
+
+        st.session_state["step1_oa_df"] = oa_df
 
 # ---------------- DISPLAY ----------------
 if "step1_df" in st.session_state:
@@ -345,10 +352,10 @@ if "step1_df" in st.session_state:
 
     st.success(f"{len(df)} papers retrieved")
 
-    with st.expander("📄 All Results"):
+    with st.expander("📄 All Results", expanded=False):
         st.dataframe(df, use_container_width=True)
 
-    # Download
+    # ---------------- FULL RESULTS DOWNLOAD ----------------
     buffer = BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
@@ -357,11 +364,30 @@ if "step1_df" in st.session_state:
     safe_query = safe_query_filename(query)
 
     st.download_button(
-        "⬇ Download Results",
+        "⬇ Download Full Results",
         data=buffer,
-        file_name=f"{safe_query}_{timestamp}.xlsx",
+        file_name=f"{safe_query}_full_results_{timestamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    # ---------------- OPEN ACCESS ONLY OUTPUT ----------------
+    if "step1_oa_df" in st.session_state:
+        oa_df = st.session_state["step1_oa_df"]
+
+        with st.expander("🔓 Open Access Results Only", expanded=False):
+            st.write(f"Total Open Access Papers: {len(oa_df)}")
+            st.dataframe(oa_df, use_container_width=True)
+
+            oa_buffer = BytesIO()
+            oa_df.to_excel(oa_buffer, index=False)
+            oa_buffer.seek(0)
+
+            st.download_button(
+                "⬇ Download Open Access Results",
+                data=oa_buffer,
+                file_name=f"{safe_query}_open_access_only_{timestamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 st.divider()
 
