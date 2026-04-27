@@ -6,9 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from dotenv import load_dotenv
-
-load_dotenv()
+import streamlit as st
 
 # =========================================================
 # CONFIG
