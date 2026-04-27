@@ -2,24 +2,42 @@ import requests
 import pandas as pd
 import re
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # =========================================================
 # CONFIG
 # =========================================================
 SEMANTIC_PAGE_SIZE = 50
-SEMANTIC_MAX_RESULTS = 500
-OPENALEX_MAX_RESULTS = 500
-ARXIV_MAX_RESULTS = 400
+SEMANTIC_MAX_RESULTS = 400
+OPENALEX_MAX_RESULTS = 400
+ARXIV_MAX_RESULTS = 300
 
+SEMANTIC_MIN_INTERVAL = 2.0
 API_THREADS = 3
 PAGE_THREADS = 6
 
 CACHE_FOLDER = "cache"
 CACHE_VERSION = "v5_yearwise_optional_csv"
 USER_AGENT = "AutoLiteratureSurvey/1.0 (mailto:test@example.com)"
+
+SOURCE_WAIT_TIMEOUT = 300
+
+SEMANTIC_API_KEY = os.getenv("SEMANTIC_API_KEY")
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
+
+SEMANTIC_HEADERS = {
+    "User-Agent": USER_AGENT,
+}
+
+if SEMANTIC_API_KEY:
+    SEMANTIC_HEADERS["x-api-key"] = SEMANTIC_API_KEY
+
 
 # =========================================================
 # UTILITIES
@@ -100,13 +118,11 @@ def blank_record():
         "arXiv_used": "NO",
     }
 
+
 # =========================================================
 # OPENALEX HELPERS
 # =========================================================
 def invert_openalex_abstract(abstract_inverted_index):
-    """
-    Reconstruct abstract text from OpenAlex abstract_inverted_index.
-    """
     if not abstract_inverted_index or not isinstance(abstract_inverted_index, dict):
         return None
 
@@ -120,8 +136,7 @@ def invert_openalex_abstract(abstract_inverted_index):
             for pos in positions:
                 if isinstance(pos, int):
                     pos_to_word[pos] = word
-                    if pos > max_pos:
-                        max_pos = pos
+                    max_pos = max(max_pos, pos)
 
         if max_pos < 0:
             return None
@@ -129,20 +144,17 @@ def invert_openalex_abstract(abstract_inverted_index):
         words = [pos_to_word.get(i, "") for i in range(max_pos + 1)]
         text = " ".join(w for w in words if w).strip()
         return re.sub(r"\s+", " ", text) if text else None
+
     except Exception:
         return None
 
 
 def extract_openalex_ids(item):
-    """
-    Extract external IDs from OpenAlex work object.
-    """
     ids = item.get("ids") or {}
 
     pmid = ids.get("pmid")
     pmcid = ids.get("pmcid")
     openalex_id = ids.get("openalex")
-
     arxiv_id = None
 
     primary_location = item.get("primary_location") or {}
@@ -166,14 +178,6 @@ def extract_openalex_ids(item):
 
 
 def choose_best_paper_link(item):
-    """
-    Prefer the most useful paper landing page.
-    Priority:
-    1. DOI URL
-    2. primary_location.landing_page_url
-    3. best_oa_location.landing_page_url
-    4. OpenAlex ID
-    """
     doi_url = normalize_doi_to_url(item.get("doi"))
     if doi_url:
         return doi_url
@@ -191,6 +195,7 @@ def choose_best_paper_link(item):
 
     return None
 
+
 # =========================================================
 # QUERY BUILDER
 # =========================================================
@@ -205,15 +210,12 @@ def build_query_legs(main_keyword, alt_keywords):
     primaries = [k.strip() for k in main_keyword.split(",") if k.strip()]
     alt_keywords = [k.strip() for k in (alt_keywords or []) if k.strip()]
 
-    # Primary-only queries
     for primary in primaries:
         queries.append(f'"{primary}"')
 
-    # Alternate-only queries
     for alt in alt_keywords:
         queries.append(f'"{alt}"')
 
-    # Primary + Alternate queries
     for primary in primaries:
         for alt in alt_keywords:
             queries.append(f'"{primary}" AND "{alt}"')
@@ -232,103 +234,171 @@ def format_query_for_api(query, source):
 # =========================================================
 # SEMANTIC SCHOLAR
 # =========================================================
+_last_semantic_call_time = 0
+
+
 def fetch_semantic_page(session, query, offset):
+    global _last_semantic_call_time
+
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    try:
-        response = session.get(
-            url,
-            params={
-                "query": query,
-                "offset": offset,
-                "limit": SEMANTIC_PAGE_SIZE,
-                "fields": "title,abstract,year,citationCount,externalIds,url,openAccessPdf,authors,venue,isOpenAccess,referenceCount",
-            },
-            timeout=(5, 15),
-        )
-        if response.status_code != 200:
+
+    for attempt in range(3):
+        try:
+            elapsed = time.time() - _last_semantic_call_time
+            if elapsed < SEMANTIC_MIN_INTERVAL:
+                time.sleep(SEMANTIC_MIN_INTERVAL - elapsed)
+
+            response = session.get(
+                url,
+                params={
+                    "query": query,
+                    "offset": offset,
+                    "limit": SEMANTIC_PAGE_SIZE,
+                    "fields": "title,abstract,year,citationCount,externalIds,url,openAccessPdf,authors,venue,isOpenAccess,referenceCount",
+                },
+                headers=SEMANTIC_HEADERS,
+                timeout=(5, 15),
+            )
+
+            _last_semantic_call_time = time.time()
+
+            if response.status_code == 429:
+                wait_time = 10 * (attempt + 1)
+                print(f"      [SemanticScholar] 429 rate limit | waiting {wait_time}s then retrying...")
+                time.sleep(wait_time)
+                continue
+
+            if response.status_code != 200:
+                print(
+                    f"      [SemanticScholar] page offset={offset} "
+                    f"status={response.status_code} | {response.text[:200]}"
+                )
+                return []
+
+            return response.json().get("data", [])
+
+        except Exception as e:
+            print(f"Semantic Scholar page error at offset {offset}: {e}")
             return []
-        return response.json().get("data", [])
-    except Exception as e:
-        print(f"Semantic Scholar page error at offset {offset}: {e}")
-        return []
+
+    print(f"      [SemanticScholar] failed after retries | offset={offset}")
+    return []
 
 
 def search_semantic_scholar(query, min_year, max_year):
+    print(f"      [SemanticScholar] START | query={query} | years={min_year}-{max_year}")
+
     session = get_retry_session()
     results = []
 
     offsets = list(range(0, SEMANTIC_MAX_RESULTS, SEMANTIC_PAGE_SIZE))
 
-    with ThreadPoolExecutor(max_workers=PAGE_THREADS) as executor:
-        futures = [executor.submit(fetch_semantic_page, session, query, offset) for offset in offsets]
+    for offset in offsets:
+        data = fetch_semantic_page(session, query, offset)
 
-        for future in as_completed(futures):
-            data = future.result()
-            for item in data:
-                year = item.get("year")
-                if not year_is_valid(year, min_year, max_year):
-                    continue
+        print(f"      [SemanticScholar] page returned | offset={offset} | rows={len(data)}")
 
-                title = item.get("title")
-                ext = item.get("externalIds") or {}
-                authors = ", ".join(
-                    a.get("name") for a in (item.get("authors") or []) if a.get("name")
-                ) or None
+        if not data:
+            print("      [SemanticScholar] no more results, stopping pagination")
+            break
 
-                record = blank_record()
-                record.update({
-                    "Paper Title": title,
-                    "Paper Link": item.get("url"),
-                    "Publication Year": year,
-                    "Publication Type": None,
-                    "Publication Title": item.get("venue"),
-                    "Author Names": authors,
-                    "DOI": normalize_doi_to_url(ext.get("DOI")),
-                    "PDF Link": (item.get("openAccessPdf") or {}).get("url"),
-                    "Open Access": item.get("isOpenAccess"),
-                    "Citations Count": safe_int(item.get("citationCount"), 0),
-                    "PubMed ID": ext.get("PubMed"),
-                    "PMC ID": ext.get("PubMedCentral"),
-                    "References": item.get("referenceCount"),
-                    "arXiv ID": ext.get("ArXiv"),
-                    "OpenAlex ID": None,
-                    "Source": "SemanticScholar",
-                    "Abstract": item.get("abstract"),
-                    "Review": is_review_paper(title),
-                    "Preprint": "NO",
-                    "arXiv_used": "NO",
-                })
-                results.append(record)
+        for item in data:
+            year = item.get("year")
+            if not year_is_valid(year, min_year, max_year):
+                continue
 
+            title = item.get("title")
+            ext = item.get("externalIds") or {}
+
+            authors = ", ".join(
+                a.get("name") for a in (item.get("authors") or []) if a.get("name")
+            ) or None
+
+            record = blank_record()
+            record.update({
+                "Paper Title": title,
+                "Paper Link": item.get("url"),
+                "Publication Year": year,
+                "Publication Type": None,
+                "Publication Title": item.get("venue"),
+                "Author Names": authors,
+                "DOI": normalize_doi_to_url(ext.get("DOI")),
+                "PDF Link": (item.get("openAccessPdf") or {}).get("url"),
+                "Open Access": item.get("isOpenAccess"),
+                "Citations Count": safe_int(item.get("citationCount"), 0),
+                "PubMed ID": ext.get("PubMed"),
+                "PMC ID": ext.get("PubMedCentral"),
+                "References": item.get("referenceCount"),
+                "arXiv ID": ext.get("ArXiv"),
+                "OpenAlex ID": None,
+                "Source": "SemanticScholar",
+                "Abstract": item.get("abstract"),
+                "Review": is_review_paper(title),
+                "Preprint": "NO",
+                "arXiv_used": "NO",
+            })
+
+            results.append(record)
+
+        # IMPORTANT:
+        # This must be outside the "for item in data" loop.
+        if len(data) < SEMANTIC_PAGE_SIZE:
+            print("      [SemanticScholar] last available page reached, stopping pagination")
+            break
+
+    print(f"      [SemanticScholar] END | total_records={len(results)}")
     return results
 
 # =========================================================
 # OPENALEX
 # =========================================================
 def search_openalex(query, min_year, max_year):
+    print(f"      [OpenAlex] START | query={query} | years={min_year}-{max_year}")
+
     url = "https://api.openalex.org/works"
     session = get_retry_session()
     results = []
     cursor = "*"
+    page_no = 0
+    max_pages = 5
 
-    while len(results) < OPENALEX_MAX_RESULTS:
+    while len(results) < OPENALEX_MAX_RESULTS and page_no < max_pages:
         try:
+            page_no += 1
+            print(f"      [OpenAlex] requesting page {page_no} | current_records={len(results)}")
+
+            params = {
+                "search": query.replace('"', ""),
+                "per-page": 100,
+                "cursor": cursor,
+                "filter": f"publication_year:{min_year}-{max_year},is_retracted:false",
+            }
+
+            if OPENALEX_API_KEY:
+                params["api_key"] = OPENALEX_API_KEY
+
             response = session.get(
                 url,
-                params={
-                    "search": query.replace('"', ""),
-                    "per-page": 200,
-                    "cursor": cursor,
-                },
+                params=params,
                 timeout=(5, 15),
             )
 
+            print(f"      [OpenAlex] page {page_no} status={response.status_code}")
+
             if response.status_code != 200:
+                print(f"      [OpenAlex] non-200 response: {response.text[:200]}")
                 break
 
             data = response.json()
+            page_results = data.get("results", [])
 
-            for item in data.get("results", []):
+            print(f"      [OpenAlex] page {page_no} returned rows={len(page_results)}")
+
+            if not page_results:
+                print("      [OpenAlex] empty page results, stopping")
+                break
+
+            for item in page_results:
                 year = item.get("publication_year")
                 if not year_is_valid(year, min_year, max_year):
                     continue
@@ -377,12 +447,16 @@ def search_openalex(query, min_year, max_year):
                     "Preprint": "YES" if item.get("type") == "preprint" else "NO",
                     "arXiv_used": "YES" if extracted_ids.get("arXiv ID") else "NO",
                 })
+
                 results.append(record)
 
                 if len(results) >= OPENALEX_MAX_RESULTS:
                     break
 
             cursor = (data.get("meta") or {}).get("next_cursor")
+
+            print(f"      [OpenAlex] page {page_no} next_cursor exists={bool(cursor)}")
+
             if not cursor or len(results) >= OPENALEX_MAX_RESULTS:
                 break
 
@@ -390,14 +464,19 @@ def search_openalex(query, min_year, max_year):
             print(f"OpenAlex error: {e}")
             break
 
+    print(f"      [OpenAlex] END | total_records={len(results)}")
     return results
+
 
 # =========================================================
 # arXiv
 # =========================================================
 def fetch_arxiv_page(session, query, start):
     base_url = "https://export.arxiv.org/api/query"
+
     try:
+        time.sleep(3.0)
+
         response = session.get(
             base_url,
             params={
@@ -407,70 +486,78 @@ def fetch_arxiv_page(session, query, start):
             },
             timeout=(5, 12),
         )
+
         if response.status_code != 200:
+            print(f"      [arXiv] page start={start} status={response.status_code}")
             return []
 
         entries = re.findall(r"<entry>(.*?)</entry>", response.text, re.DOTALL)
         return entries
+
     except Exception as e:
         print(f"arXiv page error at start {start}: {e}")
         return []
 
 
 def search_arxiv(query, min_year, max_year):
+    print(f"      [arXiv] START | query={query} | years={min_year}-{max_year}")
+
     session = get_retry_session()
     results = []
     starts = list(range(0, ARXIV_MAX_RESULTS, 50))
 
-    with ThreadPoolExecutor(max_workers=PAGE_THREADS) as executor:
-        futures = [executor.submit(fetch_arxiv_page, session, query, start) for start in starts]
+    for start in starts:
+        entries = fetch_arxiv_page(session, query, start)
 
-        for future in as_completed(futures):
-            entries = future.result()
+        print(f"      [arXiv] page returned | start={start} | entries={len(entries)}")
 
-            for e in entries:
-                title_match = re.search(r"<title>(.*?)</title>", e, re.DOTALL)
-                summary_match = re.search(r"<summary>(.*?)</summary>", e, re.DOTALL)
-                published_match = re.search(r"<published>(\d{4})-", e)
-                id_match = re.search(r"<id>(.*?)</id>", e)
+        for e in entries:
+            title_match = re.search(r"<title>(.*?)</title>", e, re.DOTALL)
+            summary_match = re.search(r"<summary>(.*?)</summary>", e, re.DOTALL)
+            published_match = re.search(r"<published>(\d{4})-", e)
+            id_match = re.search(r"<id>(.*?)</id>", e)
 
-                year = int(published_match.group(1)) if published_match else None
-                if not year_is_valid(year, min_year, max_year):
-                    continue
+            year = int(published_match.group(1)) if published_match else None
 
-                url = id_match.group(1).strip() if id_match else None
-                title = title_match.group(1).strip() if title_match else None
-                abstract = re.sub(r"\s+", " ", summary_match.group(1)).strip() if summary_match else None
+            if not year_is_valid(year, min_year, max_year):
+                continue
 
-                authors = re.findall(r"<name>(.*?)</name>", e, re.DOTALL)
-                author_names = ", ".join(a.strip() for a in authors) if authors else None
+            url = id_match.group(1).strip() if id_match else None
+            title = title_match.group(1).strip() if title_match else None
+            abstract = re.sub(r"\s+", " ", summary_match.group(1)).strip() if summary_match else None
 
-                record = blank_record()
-                record.update({
-                    "Paper Title": title,
-                    "Paper Link": url,
-                    "Publication Year": year,
-                    "Publication Type": "preprint",
-                    "Publication Title": "arXiv",
-                    "Author Names": author_names,
-                    "DOI": None,
-                    "PDF Link": url.replace("/abs/", "/pdf/") if url else None,
-                    "Open Access": True,
-                    "Citations Count": 0,
-                    "PubMed ID": None,
-                    "PMC ID": None,
-                    "References": None,
-                    "arXiv ID": url.split("/")[-1] if url else None,
-                    "OpenAlex ID": None,
-                    "Source": "arXiv",
-                    "Abstract": abstract,
-                    "Review": "NO",
-                    "Preprint": "YES",
-                    "arXiv_used": "YES",
-                })
-                results.append(record)
+            authors = re.findall(r"<name>(.*?)</name>", e, re.DOTALL)
+            author_names = ", ".join(a.strip() for a in authors) if authors else None
 
+            record = blank_record()
+            record.update({
+                "Paper Title": title,
+                "Paper Link": url,
+                "Publication Year": year,
+                "Publication Type": "preprint",
+                "Publication Title": "arXiv",
+                "Author Names": author_names,
+                "DOI": None,
+                "PDF Link": url.replace("/abs/", "/pdf/") if url else None,
+                "Open Access": True,
+                "Citations Count": 0,
+                "PubMed ID": None,
+                "PMC ID": None,
+                "References": None,
+                "arXiv ID": url.split("/")[-1] if url else None,
+                "OpenAlex ID": None,
+                "Source": "arXiv",
+                "Abstract": abstract,
+                "Review": "NO",
+                "Preprint": "YES",
+                "arXiv_used": "YES",
+            })
+
+            results.append(record)
+
+    print(f"      [arXiv] END | total_records={len(results)}")
     return results
+
 
 # =========================================================
 # RELEVANCE + SCORING
@@ -484,10 +571,6 @@ def normalize_text_for_match(text):
 
 
 def keyword_in_text(keyword, text):
-    """
-    Exact phrase match using word boundaries.
-    Prevents false matches like 'amine' in 'examine'
-    """
     if not keyword or not text:
         return False
 
@@ -539,6 +622,7 @@ def relevance_score_and_matches(paper, main_keywords, alt_keywords):
         "Meets Minimum Criteria": "YES" if meets_minimum else "NO",
     }
 
+
 # =========================================================
 # DEDUPLICATION / MERGE
 # =========================================================
@@ -547,6 +631,7 @@ def merge_records(records):
 
     for r in records:
         key = r.get("DOI") or normalize_title(r.get("Paper Title"))
+
         if not key:
             continue
 
@@ -571,6 +656,7 @@ def merge_records(records):
 
     return list(merged.values())
 
+
 # =========================================================
 # INTERNAL RUN HELPERS
 # =========================================================
@@ -579,12 +665,41 @@ def run_single_query_leg(query, min_year, max_year):
     oa_query = format_query_for_api(query, "openalex")
     ax_query = format_query_for_api(query, "arxiv")
 
+    print(f"\n🚀 START QUERY LEG | query={query} | years={min_year}-{max_year}")
+
     with ThreadPoolExecutor(max_workers=API_THREADS) as executor:
         ss_future = executor.submit(search_semantic_scholar, ss_query, min_year, max_year)
         oa_future = executor.submit(search_openalex, oa_query, min_year, max_year)
         ax_future = executor.submit(search_arxiv, ax_query, min_year, max_year)
 
-        combined = ss_future.result() + oa_future.result() + ax_future.result()
+        ss_results = []
+        oa_results = []
+        ax_results = []
+
+        print("   ⏳ Waiting for Semantic Scholar...")
+        try:
+            ss_results = ss_future.result(timeout=SOURCE_WAIT_TIMEOUT)
+            print(f"   ✅ Semantic Scholar finished | records={len(ss_results)}")
+        except Exception as e:
+            print(f"   ❌ Semantic Scholar failed or timed out: {e}")
+
+        print("   ⏳ Waiting for OpenAlex...")
+        try:
+            oa_results = oa_future.result(timeout=SOURCE_WAIT_TIMEOUT)
+            print(f"   ✅ OpenAlex finished | records={len(oa_results)}")
+        except Exception as e:
+            print(f"   ❌ OpenAlex failed or timed out: {e}")
+
+        print("   ⏳ Waiting for arXiv...")
+        try:
+            ax_results = ax_future.result(timeout=SOURCE_WAIT_TIMEOUT)
+            print(f"   ✅ arXiv finished | records={len(ax_results)}")
+        except Exception as e:
+            print(f"   ❌ arXiv failed or timed out: {e}")
+
+    combined = ss_results + oa_results + ax_results
+
+    print(f"🏁 END QUERY LEG | query={query} | years={min_year}-{max_year} | combined={len(combined)}")
 
     return combined
 
@@ -606,6 +721,7 @@ def collect_results_for_query_legs(query_legs, min_year, max_year, year_wise=Fal
                     print(f"Cache read failed, re-running query. Error: {e}")
 
             print(f"🔍 Running query: {query} | Years: {min_year}-{max_year}")
+
             combined = run_single_query_leg(query, min_year, max_year)
 
             if combined:
@@ -618,7 +734,6 @@ def collect_results_for_query_legs(query_legs, min_year, max_year, year_wise=Fal
 
         return all_results
 
-    # Year-wise mode
     for year in range(min_year, max_year + 1):
         for query in query_legs:
             cache_path = get_cache_path(query, year, year, year_wise=True)
@@ -633,6 +748,7 @@ def collect_results_for_query_legs(query_legs, min_year, max_year, year_wise=Fal
                     print(f"Year-wise cache read failed, re-running query. Error: {e}")
 
             print(f"🔍 Running year-wise query: {query} | Year: {year}")
+
             combined = run_single_query_leg(query, year, year)
 
             if combined:
@@ -644,6 +760,7 @@ def collect_results_for_query_legs(query_legs, min_year, max_year, year_wise=Fal
             all_results.extend(combined)
 
     return all_results
+
 
 # =========================================================
 # MAIN
@@ -684,16 +801,13 @@ def run_literature_search(main_keyword, alt_keywords, min_year, max_year, year_w
     df["Matched Keywords Combined"] = relevance_df["Matched Keywords Combined"]
     df["Meets Minimum Criteria"] = relevance_df["Meets Minimum Criteria"]
 
-    # Remove rows with Relevance Score = 0
     df = df[df["Relevance Score"] > 0].copy()
 
-    # Sort by Citation Count first, then Relevance Score
     df = df.sort_values(
         by=["Citations Count", "Relevance Score"],
         ascending=False
     ).reset_index(drop=True)
 
-    # Remove unwanted output columns
     df = df.drop(
         columns=[
             "Matched Main Keywords",
