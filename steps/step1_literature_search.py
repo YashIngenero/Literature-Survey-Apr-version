@@ -76,7 +76,7 @@ def get_retry_session():
         connect=4,
         read=4,
         backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
+        status_forcelist=[500, 502, 503, 504],
         allowed_methods=["GET"],
         raise_on_status=False,
     )
