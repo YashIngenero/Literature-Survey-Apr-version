@@ -26,8 +26,8 @@ USER_AGENT = "AutoLiteratureSurvey/1.0 (mailto:test@example.com)"
 
 SOURCE_WAIT_TIMEOUT = 300
 
-SEMANTIC_API_KEY = st.secrets("SEMANTIC_API_KEY")
-OPENALEX_API_KEY = st.secrets("OPENALEX_API_KEY")
+SEMANTIC_API_KEY = st.secrets["SEMANTIC_API_KEY"]
+OPENALEX_API_KEY = st.secrets["OPENALEX_API_KEY"]
 
 SEMANTIC_HEADERS = {
     "User-Agent": USER_AGENT,
